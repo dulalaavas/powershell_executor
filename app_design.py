@@ -22,7 +22,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# When frozen as .exe, sys.executable is the exe path; otherwise use __file__
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(SCRIPT_DIR, "commands.json")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 
