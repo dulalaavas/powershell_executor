@@ -3,6 +3,8 @@ from tkinter import ttk, messagebox, filedialog
 import subprocess
 import json
 import os
+import sys
+import ctypes
 
 try:
     from PIL import Image, ImageTk
@@ -1519,7 +1521,21 @@ class PowerShellApp:
         self.root.after(0, self._on_close)
 
 
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
+    if not is_admin():
+        # Re-launch with admin privileges
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, " ".join(sys.argv), None, 1
+        )
+        sys.exit(0)
+
     root = tk.Tk()
     app = PowerShellApp(root)
     root.mainloop()
