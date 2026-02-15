@@ -82,8 +82,8 @@ FONTS = {
     "search_icon": (FONT_FAMILY, 12),
 }
 
-CARD_IMAGE_SIZE = (110, 80)
-CARD_MAX_NAME = 20
+CARD_IMAGE_SIZE = (160, 100)
+CARD_MAX_NAME = 22
 COLUMNS = 3
 
 
@@ -173,6 +173,7 @@ class PowerShellApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.commands = self.load_commands()
+        self.custom_categories = self._load_custom_categories()
         self._drag_data = {"idx": None}
         self._visible_count = 0
 
@@ -406,7 +407,41 @@ class PowerShellApp:
             cat = item.get("category", "")
             if cat:
                 cats.add(cat)
+        # Merge with custom categories
+        for cat_info in self.custom_categories:
+            cats.add(cat_info["name"])
         return sorted(cats)
+
+    def _get_category_icon(self, cat_name):
+        for cat_info in self.custom_categories:
+            if cat_info["name"] == cat_name:
+                return cat_info.get("icon", "")
+        return ""
+
+    def _load_custom_categories(self):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+            cats = cfg.get("categories", [])
+            if isinstance(cats, list):
+                return cats
+        except Exception:
+            pass
+        return []
+
+    def _save_custom_categories(self):
+        cfg = {}
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+        cfg["categories"] = self.custom_categories
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(cfg, f)
+        except Exception:
+            pass
 
     def _build_sidebar(self):
         for w in list(self._sidebar_buttons.values()):
@@ -419,8 +454,8 @@ class PowerShellApp:
             w.destroy()
         self._sidebar_extras.clear()
 
-        # Fixed items: Home, Search
-        for fixed in ("Home", "Search"):
+        # Fixed items: Search, Home
+        for fixed in ("Search", "Home"):
             if fixed == "Home":
                 icon = "\u2302"
                 count = len(self.commands)
@@ -466,12 +501,14 @@ class PowerShellApp:
         categories = self._get_categories()
         for cat in categories:
             count = sum(1 for c in self.commands if c.get("category", "") == cat)
+            cat_icon = self._get_category_icon(cat)
 
             container = tk.Frame(self.sidebar, bg=THEME["sidebar_bg"], cursor="hand2")
             container.pack(fill="x")
 
+            display_text = f" {cat_icon}  {cat}" if cat_icon else f"  {cat}"
             lbl = tk.Label(
-                container, text=f"  {cat}", font=FONTS["sidebar"],
+                container, text=display_text, font=FONTS["sidebar"],
                 bg=THEME["sidebar_bg"], fg=THEME["sidebar_fg"], anchor="w"
             )
             lbl.pack(side="left", fill="x", expand=True, padx=(14, 0), pady=7)
@@ -488,6 +525,31 @@ class PowerShellApp:
                 w.bind("<Leave>", lambda e, cn=container, lb=lbl, cl=count_lbl, c=cat: self._sidebar_hover(cn, lb, cl, c, False))
 
             self._sidebar_buttons[cat] = (container, lbl, count_lbl)
+
+        # Spacer to push "Add Category" to bottom
+        spacer = tk.Frame(self.sidebar, bg=THEME["sidebar_bg"])
+        spacer.pack(fill="both", expand=True)
+        self._sidebar_extras.append(spacer)
+
+        # "Add Category" button at bottom
+        add_cat_sep = tk.Frame(self.sidebar, bg=THEME["sidebar_sep"], height=1)
+        add_cat_sep.pack(fill="x", padx=14, pady=(6, 0))
+        self._sidebar_extras.append(add_cat_sep)
+
+        add_cat_btn = tk.Frame(self.sidebar, bg=THEME["sidebar_bg"], cursor="hand2")
+        add_cat_btn.pack(fill="x", pady=(0, 8))
+        self._sidebar_extras.append(add_cat_btn)
+
+        add_cat_lbl = tk.Label(
+            add_cat_btn, text=" +  Add Category", font=FONTS["sidebar"],
+            bg=THEME["sidebar_bg"], fg=THEME["accent"], anchor="w", cursor="hand2"
+        )
+        add_cat_lbl.pack(fill="x", padx=14, pady=8)
+
+        for w in (add_cat_btn, add_cat_lbl):
+            w.bind("<Button-1>", lambda e: self.add_category())
+            w.bind("<Enter>", lambda e: add_cat_lbl.configure(bg=THEME["sidebar_active"]) or add_cat_btn.configure(bg=THEME["sidebar_active"]))
+            w.bind("<Leave>", lambda e: add_cat_lbl.configure(bg=THEME["sidebar_bg"]) or add_cat_btn.configure(bg=THEME["sidebar_bg"]))
 
         self._highlight_sidebar()
 
@@ -671,6 +733,7 @@ class PowerShellApp:
 
     def refresh_all(self):
         self.commands = self.load_commands()
+        self.custom_categories = self._load_custom_categories()
         self._rebuild()
         self._toast("Refreshed")
 
@@ -700,6 +763,84 @@ class PowerShellApp:
             "Tip: Right-click cards to Run, Edit,\n"
             "Duplicate, or Delete."
         )
+
+    # -----------------------------------------------------------------------
+    # Add Category dialog
+    # -----------------------------------------------------------------------
+    CATEGORY_ICONS = [
+        "\U0001F4C1", "\U0001F4C2", "\U0001F5C2", "\U0001F4BB", "\U0001F5A5",
+        "\U0001F310", "\U0001F512", "\U0001F513", "\U0001F527", "\U0001F6E0",
+        "\u2699", "\U0001F4E6", "\U0001F4CA", "\U0001F4C8", "\U0001F4DD",
+        "\U0001F3AE", "\U0001F3B5", "\U0001F4F7", "\U0001F4F1", "\U0001F4E7",
+        "\u2B50", "\U0001F525", "\U0001F680", "\U0001F4A1", "\U0001F50C",
+        "\U0001F4BE", "\U0001F4BF", "\U0001F4C5", "\U0001F3E0", "\U0001F6A9",
+    ]
+
+    def add_category(self):
+        dlg = self._themed_dialog("Add Category", width=380, height=340)
+
+        self._themed_label(dlg, "Category Name:", 0)
+        name_var = tk.StringVar()
+        name_entry = self._themed_entry(dlg, name_var, 0)
+        name_entry.focus_set()
+
+        self._themed_label(dlg, "Select Icon:", 1)
+
+        # Icon selector grid
+        icon_frame = tk.Frame(dlg, bg=THEME["bg"])
+        icon_frame.grid(row=2, column=0, columnspan=2, padx=16, pady=8, sticky="ew")
+
+        selected_icon = tk.StringVar(value="")
+        icon_labels = []
+
+        def select_icon(icon, lbl):
+            selected_icon.set(icon)
+            for il in icon_labels:
+                il.configure(bg=THEME["bg"], relief="flat")
+            lbl.configure(bg=THEME["accent_light"], relief="solid")
+
+        col = 0
+        row = 0
+        for icon in self.CATEGORY_ICONS:
+            lbl = tk.Label(
+                icon_frame, text=icon, font=(FONT_FAMILY, 14),
+                bg=THEME["bg"], fg=THEME["text_primary"],
+                width=3, height=1, cursor="hand2", relief="flat", bd=1
+            )
+            lbl.grid(row=row, column=col, padx=2, pady=2)
+            lbl.bind("<Button-1>", lambda e, ic=icon, lb=lbl: select_icon(ic, lb))
+            icon_labels.append(lbl)
+            col += 1
+            if col >= 10:
+                col = 0
+                row += 1
+
+        btn_frame = tk.Frame(dlg, bg=THEME["bg"])
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=16)
+
+        def create(event=None):
+            cat_name = name_var.get().strip()
+            if not cat_name:
+                messagebox.showwarning("Warning", "Category name cannot be empty.", parent=dlg)
+                return
+            # Check for duplicate
+            existing = {c["name"] for c in self.custom_categories}
+            if cat_name in existing:
+                messagebox.showwarning("Warning", f"Category '{cat_name}' already exists.", parent=dlg)
+                return
+            new_cat = {"name": cat_name}
+            icon = selected_icon.get()
+            if icon:
+                new_cat["icon"] = icon
+            self.custom_categories.append(new_cat)
+            self._save_custom_categories()
+            self._rebuild()
+            self._toast(f"Category '{cat_name}' created")
+            dlg.destroy()
+
+        dlg.bind("<Return>", create)
+        self._themed_button(btn_frame, "Create", create, "accent").pack(side="left", padx=8)
+        self._themed_button(btn_frame, "Cancel", dlg.destroy).pack(side="left", padx=8)
 
     # -----------------------------------------------------------------------
     # Status bar
@@ -737,7 +878,7 @@ class PowerShellApp:
     # -----------------------------------------------------------------------
     # Dialog helpers
     # -----------------------------------------------------------------------
-    def _themed_dialog(self, title, width=460, height=360):
+    def _themed_dialog(self, title, width=520, height=360):
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -793,7 +934,8 @@ class PowerShellApp:
     # Add command dialog
     # -----------------------------------------------------------------------
     def add_new_command(self):
-        dlg = self._themed_dialog("New Command")
+        dlg = self._themed_dialog("New Command", height=460)
+        dlg.columnconfigure(1, weight=1)
 
         self._themed_label(dlg, "Name:", 0)
         name_var = tk.StringVar()
@@ -810,7 +952,53 @@ class PowerShellApp:
 
         self._themed_label(dlg, "Category:", 3)
         cat_var = tk.StringVar()
-        self._themed_entry(dlg, cat_var, 3)
+
+        # Scrollable category selector
+        cat_frame = tk.Frame(dlg, bg=THEME["bg"])
+        cat_frame.grid(row=3, column=1, padx=16, pady=5, sticky="ew")
+
+        cat_canvas = tk.Canvas(cat_frame, bg=THEME["card_bg"], highlightthickness=1,
+                               highlightbackground=THEME["card_border"], height=70)
+        cat_scrollbar = ttk.Scrollbar(cat_frame, orient="horizontal", command=cat_canvas.xview)
+        cat_inner = tk.Frame(cat_canvas, bg=THEME["card_bg"])
+
+        cat_canvas.configure(xscrollcommand=cat_scrollbar.set)
+        cat_scrollbar.pack(side="bottom", fill="x")
+        cat_canvas.pack(side="top", fill="x", expand=True)
+        cat_canvas.create_window((0, 0), window=cat_inner, anchor="nw")
+        cat_inner.bind("<Configure>", lambda e: cat_canvas.configure(scrollregion=cat_canvas.bbox("all")))
+
+        cat_pill_labels = []
+        categories = self._get_categories()
+
+        def select_cat(cat_name):
+            if cat_var.get() == cat_name:
+                cat_var.set("")
+            else:
+                cat_var.set(cat_name)
+            _refresh_pills()
+
+        def _refresh_pills():
+            sel = cat_var.get()
+            for pill_lbl, pill_cat in cat_pill_labels:
+                if pill_cat == sel:
+                    pill_lbl.configure(bg=THEME["accent"], fg=THEME["accent_fg"])
+                else:
+                    pill_lbl.configure(bg=THEME["badge_bg"], fg=THEME["badge_fg"])
+
+        for cat_name in categories:
+            icon = self._get_category_icon(cat_name)
+            pill_text = f" {icon} {cat_name} " if icon else f" {cat_name} "
+            pill = tk.Label(
+                cat_inner, text=pill_text, font=FONTS["badge"],
+                bg=THEME["badge_bg"], fg=THEME["badge_fg"],
+                padx=8, pady=4, cursor="hand2", relief="flat", bd=0
+            )
+            pill.pack(side="left", padx=3, pady=6)
+            pill.bind("<Button-1>", lambda e, cn=cat_name: select_cat(cn))
+            cat_pill_labels.append((pill, cat_name))
+
+        _refresh_pills()
 
         def browse_image():
             path = filedialog.askopenfilename(parent=dlg, filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")])
@@ -851,7 +1039,8 @@ class PowerShellApp:
     # -----------------------------------------------------------------------
     def edit_command(self, idx):
         item = self.commands[idx]
-        dlg = self._themed_dialog(f"Edit — {item['name']}")
+        dlg = self._themed_dialog(f"Edit — {item['name']}", height=460)
+        dlg.columnconfigure(1, weight=1)
 
         self._themed_label(dlg, "Name:", 0)
         name_var = tk.StringVar(value=item["name"])
@@ -867,7 +1056,54 @@ class PowerShellApp:
 
         self._themed_label(dlg, "Category:", 3)
         cat_var = tk.StringVar(value=item.get("category", ""))
-        self._themed_entry(dlg, cat_var, 3)
+
+        # Scrollable category selector
+        cat_frame = tk.Frame(dlg, bg=THEME["bg"])
+        cat_frame.grid(row=3, column=1, padx=16, pady=5, sticky="ew")
+
+        cat_canvas = tk.Canvas(cat_frame, bg=THEME["card_bg"], highlightthickness=1,
+                               highlightbackground=THEME["card_border"], height=70)
+        cat_scrollbar = ttk.Scrollbar(cat_frame, orient="horizontal", command=cat_canvas.xview)
+        cat_inner = tk.Frame(cat_canvas, bg=THEME["card_bg"])
+
+        cat_canvas.configure(xscrollcommand=cat_scrollbar.set)
+        cat_scrollbar.pack(side="bottom", fill="x")
+        cat_canvas.pack(side="top", fill="x", expand=True)
+        cat_canvas_win = cat_canvas.create_window((0, 0), window=cat_inner, anchor="nw")
+        cat_inner.bind("<Configure>", lambda e: cat_canvas.configure(scrollregion=cat_canvas.bbox("all")))
+
+        cat_pill_labels = []
+        categories = self._get_categories()
+        current_cat = item.get("category", "")
+
+        def select_cat(cat_name):
+            if cat_var.get() == cat_name:
+                cat_var.set("")
+            else:
+                cat_var.set(cat_name)
+            _refresh_pills()
+
+        def _refresh_pills():
+            sel = cat_var.get()
+            for pill_lbl, pill_cat in cat_pill_labels:
+                if pill_cat == sel:
+                    pill_lbl.configure(bg=THEME["accent"], fg=THEME["accent_fg"])
+                else:
+                    pill_lbl.configure(bg=THEME["badge_bg"], fg=THEME["badge_fg"])
+
+        for cat_name in categories:
+            icon = self._get_category_icon(cat_name)
+            pill_text = f" {icon} {cat_name} " if icon else f" {cat_name} "
+            pill = tk.Label(
+                cat_inner, text=pill_text, font=FONTS["badge"],
+                bg=THEME["badge_bg"], fg=THEME["badge_fg"],
+                padx=8, pady=4, cursor="hand2", relief="flat", bd=0
+            )
+            pill.pack(side="left", padx=3, pady=6)
+            pill.bind("<Button-1>", lambda e, cn=cat_name: select_cat(cn))
+            cat_pill_labels.append((pill, cat_name))
+
+        _refresh_pills()
 
         def browse_image():
             path = filedialog.askopenfilename(parent=dlg, filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")])
@@ -1063,7 +1299,7 @@ class PowerShellApp:
             card = tk.Frame(
                 self.buttons_frame, bg=THEME["card_bg"], bd=0,
                 highlightthickness=1, highlightbackground=THEME["card_border"],
-                padx=10, pady=10
+                padx=12, pady=10
             )
 
             # Collect non-button children to recolor on hover
@@ -1076,9 +1312,9 @@ class PowerShellApp:
                 lbl_img = tk.Label(card, image=photo, bg=THEME["card_bg"], bd=0)
             else:
                 lbl_img = tk.Label(
-                    card, text="\U0001F4BB", font=(FONT_FAMILY, 24),
+                    card, text="\U0001F4BB", font=(FONT_FAMILY, 28),
                     bg=THEME["accent_light"], fg=THEME["accent"],
-                    width=8, height=3
+                    width=12, height=3
                 )
             lbl_img.pack(pady=(0, 8), fill="x")
             lbl_img.bind("<Button-3>", lambda e, i=idx: self._show_card_menu(e, i))
