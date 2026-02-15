@@ -338,12 +338,40 @@ class PowerShellApp:
 
         self.canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=(4, 10))
 
-        # Only scroll when mouse is over the canvas and content overflows
+        # Disable the Text widget's built-in mousewheel so we control it
+        self.output_text.bind("<MouseWheel>", lambda e: "break")
+
+        # Mousewheel routing — use winfo_containing to check actual mouse position
+        def _is_over(widget, x, y):
+            """Check if screen coords (x, y) are within widget's bounds."""
+            try:
+                wx = widget.winfo_rootx()
+                wy = widget.winfo_rooty()
+                ww = widget.winfo_width()
+                wh = widget.winfo_height()
+                return wx <= x <= wx + ww and wy <= y <= wy + wh
+            except Exception:
+                return False
+
         def _on_mousewheel(event):
-            if self._content_overflows():
-                self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+            sx, sy = event.x_root, event.y_root
+            delta = -1 * (event.delta // 120)
+
+            # Check output panel first
+            if self._output_visible and _is_over(self.output_frame, sx, sy):
+                self.output_text.yview_scroll(delta, "units")
+                return "break"
+
+            # Check card area
+            if _is_over(self.canvas, sx, sy):
+                if self._content_overflows():
+                    self.canvas.yview_scroll(delta, "units")
+                return "break"
+
+            # Nowhere scrollable — do nothing
+            return "break"
+
+        self.root.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Card cache
         self._card_widgets = []
@@ -1071,6 +1099,16 @@ class PowerShellApp:
         browse_btn = self._themed_button(dlg, "Browse...", browse_image)
         browse_btn.grid(row=2, column=2, padx=(0, 16), pady=5)
 
+        # Admin checkbox
+        admin_var = tk.BooleanVar(value=False)
+        admin_chk = tk.Checkbutton(
+            dlg, text="  Run as Administrator", variable=admin_var,
+            font=FONTS["body"], bg=THEME["bg"], fg=THEME["text_primary"],
+            activebackground=THEME["bg"], activeforeground=THEME["text_primary"],
+            selectcolor=THEME["search_bg"], cursor="hand2"
+        )
+        admin_chk.grid(row=4, column=0, columnspan=2, padx=16, pady=(8, 0), sticky="w")
+
         btn_frame = tk.Frame(dlg, bg=THEME["bg"])
         btn_frame.grid(row=5, column=0, columnspan=3, pady=20)
 
@@ -1087,6 +1125,8 @@ class PowerShellApp:
             cat = cat_var.get().strip()
             if cat:
                 new_item["category"] = cat
+            if admin_var.get():
+                new_item["admin"] = True
             self.commands.append(new_item)
             self.save_commands()
             self._rebuild()
@@ -1120,24 +1160,13 @@ class PowerShellApp:
         self._themed_label(dlg, "Category:", 3)
         cat_var = tk.StringVar(value=item.get("category", ""))
 
-        # Scrollable category selector
-        cat_frame = tk.Frame(dlg, bg=THEME["bg"])
+        # Category selector (wrapping pills)
+        cat_frame = tk.Frame(dlg, bg=THEME["card_bg"], highlightthickness=1,
+                             highlightbackground=THEME["card_border"])
         cat_frame.grid(row=3, column=1, padx=16, pady=5, sticky="ew")
-
-        cat_canvas = tk.Canvas(cat_frame, bg=THEME["card_bg"], highlightthickness=1,
-                               highlightbackground=THEME["card_border"], height=70)
-        cat_scrollbar = ttk.Scrollbar(cat_frame, orient="horizontal", command=cat_canvas.xview)
-        cat_inner = tk.Frame(cat_canvas, bg=THEME["card_bg"])
-
-        cat_canvas.configure(xscrollcommand=cat_scrollbar.set)
-        cat_scrollbar.pack(side="bottom", fill="x")
-        cat_canvas.pack(side="top", fill="x", expand=True)
-        cat_canvas_win = cat_canvas.create_window((0, 0), window=cat_inner, anchor="nw")
-        cat_inner.bind("<Configure>", lambda e: cat_canvas.configure(scrollregion=cat_canvas.bbox("all")))
 
         cat_pill_labels = []
         categories = self._get_categories()
-        current_cat = item.get("category", "")
 
         def select_cat(cat_name):
             if cat_var.get() == cat_name:
@@ -1158,13 +1187,17 @@ class PowerShellApp:
             icon = self._get_category_icon(cat_name)
             pill_text = f" {icon} {cat_name} " if icon else f" {cat_name} "
             pill = tk.Label(
-                cat_inner, text=pill_text, font=FONTS["badge"],
+                cat_frame, text=pill_text, font=FONTS["badge"],
                 bg=THEME["badge_bg"], fg=THEME["badge_fg"],
                 padx=8, pady=4, cursor="hand2", relief="flat", bd=0
             )
             pill.pack(side="left", padx=3, pady=6)
             pill.bind("<Button-1>", lambda e, cn=cat_name: select_cat(cn))
             cat_pill_labels.append((pill, cat_name))
+
+        if not categories:
+            tk.Label(cat_frame, text="  No categories yet  ", font=FONTS["small"],
+                     bg=THEME["card_bg"], fg=THEME["text_muted"]).pack(pady=8)
 
         _refresh_pills()
 
@@ -1175,6 +1208,16 @@ class PowerShellApp:
 
         browse_btn = self._themed_button(dlg, "Browse...", browse_image)
         browse_btn.grid(row=2, column=2, padx=(0, 16), pady=5)
+
+        # Admin checkbox
+        admin_var = tk.BooleanVar(value=item.get("admin", False))
+        admin_chk = tk.Checkbutton(
+            dlg, text="  Run as Administrator", variable=admin_var,
+            font=FONTS["body"], bg=THEME["bg"], fg=THEME["text_primary"],
+            activebackground=THEME["bg"], activeforeground=THEME["text_primary"],
+            selectcolor=THEME["search_bg"], cursor="hand2"
+        )
+        admin_chk.grid(row=4, column=0, columnspan=2, padx=16, pady=(8, 0), sticky="w")
 
         btn_frame = tk.Frame(dlg, bg=THEME["bg"])
         btn_frame.grid(row=5, column=0, columnspan=3, pady=20)
@@ -1197,6 +1240,10 @@ class PowerShellApp:
                 item["category"] = cat
             elif "category" in item:
                 del item["category"]
+            if admin_var.get():
+                item["admin"] = True
+            elif "admin" in item:
+                del item["admin"]
             self.save_commands()
             self._rebuild()
             self._toast(f"Saved '{new_name}'")
@@ -1218,9 +1265,24 @@ class PowerShellApp:
     # -----------------------------------------------------------------------
     # Run command
     # -----------------------------------------------------------------------
-    def run_powershell(self, command):
-        if not messagebox.askyesno("Confirm", f"Run this command?\n\n{command}"):
+    def run_powershell(self, command, admin=False):
+        mode_label = " (Admin)" if admin else ""
+        if not messagebox.askyesno("Confirm", f"Run this command{mode_label}?\n\n{command}"):
             return
+
+        if admin:
+            # Elevated run via ShellExecute — triggers UAC prompt
+            # Output can't be captured for elevated processes
+            self._toast("Launching as Administrator...")
+            try:
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", "powershell",
+                    f'-Command "{command}"', None, 0
+                )
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+            return
+
         self._toast("Running...")
 
         # Show the output panel and print command banner
@@ -1301,7 +1363,7 @@ class PowerShellApp:
     def _show_card_menu(self, event, idx):
         menu = tk.Menu(self.root, tearoff=0, font=FONTS["small"])
         item = self.commands[idx]
-        menu.add_command(label="  Run", command=lambda: self.run_powershell(item["cmd"]))
+        menu.add_command(label="  Run", command=lambda: self.run_powershell(item["cmd"], item.get("admin", False)))
         menu.add_command(label="  Edit", command=lambda: self.edit_command(idx))
         menu.add_command(label="  Duplicate", command=lambda: self._duplicate_command(idx))
         menu.add_separator()
@@ -1424,12 +1486,21 @@ class PowerShellApp:
                 )
                 cat_lbl.pack(pady=(0, 4))
 
+            # Admin badge
+            is_admin = item.get("admin", False)
+            if is_admin:
+                admin_lbl = tk.Label(
+                    card, text=" \U0001F6E1 Admin ", font=FONTS["badge"],
+                    bg="#FEF3C7", fg="#92400E", padx=6, pady=1
+                )
+                admin_lbl.pack(pady=(0, 4))
+
             # Buttons row
             btn_row = tk.Frame(card, bg=THEME["card_bg"])
             btn_row.pack(pady=(6, 0))
             hover_targets.append(btn_row)
 
-            run_btn = self._themed_button(btn_row, "\u25B6  Run", lambda c=item["cmd"]: self.run_powershell(c), "accent")
+            run_btn = self._themed_button(btn_row, "\u25B6  Run", lambda c=item["cmd"], a=is_admin: self.run_powershell(c, a), "accent")
             run_btn.pack(side="left", padx=3)
 
             edit_btn = self._themed_button(btn_row, "Edit", lambda i=idx: self.edit_command(i))
@@ -1555,21 +1626,7 @@ class PowerShellApp:
         self.root.after(0, self._on_close)
 
 
-def is_admin():
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except Exception:
-        return False
-
-
 if __name__ == "__main__":
-    if not is_admin():
-        # Re-launch with admin privileges
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, " ".join(sys.argv), None, 1
-        )
-        sys.exit(0)
-
     root = tk.Tk()
     app = PowerShellApp(root)
     root.mainloop()
