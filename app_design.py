@@ -247,18 +247,16 @@ class PowerShellApp:
 
         self.output_text = tk.Text(
             text_container, bg=THEME["output_bg"], fg=THEME["output_fg"],
-            font=FONTS["output"], wrap="none", relief="flat", state="disabled",
+            font=FONTS["output"], wrap="word", relief="flat", state="disabled",
             insertbackground=THEME["output_fg"], padx=12, pady=8, height=10,
             selectbackground=THEME["output_border"], selectforeground=THEME["output_fg"],
             borderwidth=0, highlightthickness=0, spacing1=2, spacing3=2
         )
         output_vscroll = ttk.Scrollbar(text_container, orient="vertical", command=self.output_text.yview)
-        output_hscroll = ttk.Scrollbar(self.output_frame, orient="horizontal", command=self.output_text.xview)
-        self.output_text.configure(yscrollcommand=output_vscroll.set, xscrollcommand=output_hscroll.set)
+        self.output_text.configure(yscrollcommand=output_vscroll.set)
 
         output_vscroll.pack(side="right", fill="y")
         self.output_text.pack(side="left", fill="both", expand=True)
-        output_hscroll.pack(fill="x")
 
         # Text color tags for styled output
         self.output_text.tag_configure("prompt", foreground=THEME["output_prompt"])
@@ -329,16 +327,13 @@ class PowerShellApp:
 
         # Scrollable card grid
         self.canvas = tk.Canvas(self.content_area, bg=THEME["content_bg"], highlightthickness=0, bd=0)
-        self.scrollbar = ttk.Scrollbar(self.content_area, orient="vertical", command=self.canvas.yview)
         self.buttons_frame = tk.Frame(self.canvas, bg=THEME["content_bg"])
 
-        self.buttons_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.buttons_frame.bind("<Configure>", lambda e: self._update_scroll_region())
         self._canvas_win = self.canvas.create_window((0, 0), window=self.buttons_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
         self.canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=(4, 10))
-        self.scrollbar.pack(side="right", fill="y", pady=4)
 
         self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"))
 
@@ -376,10 +371,30 @@ class PowerShellApp:
             self._setup_tray()
 
     # -----------------------------------------------------------------------
-    # Canvas resize
+    # Canvas resize / auto-scrollbar
     # -----------------------------------------------------------------------
     def _on_canvas_resize(self, event):
         self.canvas.itemconfig(self._canvas_win, width=event.width)
+        self._update_scroll_region()
+
+    def _update_scroll_region(self):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Show scrollbar only when content exceeds visible area
+        self.canvas.update_idletasks()
+        content_h = self.buttons_frame.winfo_reqheight()
+        canvas_h = self.canvas.winfo_height()
+        if content_h > canvas_h:
+            if not hasattr(self, '_scrollbar_visible') or not self._scrollbar_visible:
+                self._scrollbar_visible = True
+                self.scrollbar = ttk.Scrollbar(self.content_area, orient="vertical", command=self.canvas.yview)
+                self.canvas.configure(yscrollcommand=self.scrollbar.set)
+                self.scrollbar.pack(side="right", fill="y", pady=4)
+        else:
+            if hasattr(self, '_scrollbar_visible') and self._scrollbar_visible:
+                self._scrollbar_visible = False
+                self.scrollbar.pack_forget()
+                self.canvas.configure(yscrollcommand=lambda *a: None)
+                self.scrollbar.destroy()
 
     # -----------------------------------------------------------------------
     # Geometry persistence
@@ -987,20 +1002,10 @@ class PowerShellApp:
         self._themed_label(dlg, "Category:", 3)
         cat_var = tk.StringVar()
 
-        # Scrollable category selector
-        cat_frame = tk.Frame(dlg, bg=THEME["bg"])
+        # Category selector (wrapping pills)
+        cat_frame = tk.Frame(dlg, bg=THEME["card_bg"], highlightthickness=1,
+                             highlightbackground=THEME["card_border"])
         cat_frame.grid(row=3, column=1, padx=16, pady=5, sticky="ew")
-
-        cat_canvas = tk.Canvas(cat_frame, bg=THEME["card_bg"], highlightthickness=1,
-                               highlightbackground=THEME["card_border"], height=70)
-        cat_scrollbar = ttk.Scrollbar(cat_frame, orient="horizontal", command=cat_canvas.xview)
-        cat_inner = tk.Frame(cat_canvas, bg=THEME["card_bg"])
-
-        cat_canvas.configure(xscrollcommand=cat_scrollbar.set)
-        cat_scrollbar.pack(side="bottom", fill="x")
-        cat_canvas.pack(side="top", fill="x", expand=True)
-        cat_canvas.create_window((0, 0), window=cat_inner, anchor="nw")
-        cat_inner.bind("<Configure>", lambda e: cat_canvas.configure(scrollregion=cat_canvas.bbox("all")))
 
         cat_pill_labels = []
         categories = self._get_categories()
@@ -1024,13 +1029,17 @@ class PowerShellApp:
             icon = self._get_category_icon(cat_name)
             pill_text = f" {icon} {cat_name} " if icon else f" {cat_name} "
             pill = tk.Label(
-                cat_inner, text=pill_text, font=FONTS["badge"],
+                cat_frame, text=pill_text, font=FONTS["badge"],
                 bg=THEME["badge_bg"], fg=THEME["badge_fg"],
                 padx=8, pady=4, cursor="hand2", relief="flat", bd=0
             )
             pill.pack(side="left", padx=3, pady=6)
             pill.bind("<Button-1>", lambda e, cn=cat_name: select_cat(cn))
             cat_pill_labels.append((pill, cat_name))
+
+        if not categories:
+            tk.Label(cat_frame, text="  No categories yet  ", font=FONTS["small"],
+                     bg=THEME["card_bg"], fg=THEME["text_muted"]).pack(pady=8)
 
         _refresh_pills()
 
