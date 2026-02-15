@@ -327,15 +327,23 @@ class PowerShellApp:
 
         # Scrollable card grid
         self.canvas = tk.Canvas(self.content_area, bg=THEME["content_bg"], highlightthickness=0, bd=0)
+        self.scrollbar = ttk.Scrollbar(self.content_area, orient="vertical", command=self.canvas.yview)
         self.buttons_frame = tk.Frame(self.canvas, bg=THEME["content_bg"])
+        self._scrollbar_visible = False
 
-        self.buttons_frame.bind("<Configure>", lambda e: self._update_scroll_region())
+        self.buttons_frame.bind("<Configure>", lambda e: self._sync_scroll())
         self._canvas_win = self.canvas.create_window((0, 0), window=self.buttons_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self._on_scroll_set)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
         self.canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=(4, 10))
 
-        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        # Only scroll when mouse is over the canvas and content overflows
+        def _on_mousewheel(event):
+            if self._content_overflows():
+                self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
 
         # Card cache
         self._card_widgets = []
@@ -371,30 +379,42 @@ class PowerShellApp:
             self._setup_tray()
 
     # -----------------------------------------------------------------------
-    # Canvas resize / auto-scrollbar
+    # Canvas resize / scroll management
     # -----------------------------------------------------------------------
     def _on_canvas_resize(self, event):
         self.canvas.itemconfig(self._canvas_win, width=event.width)
-        self._update_scroll_region()
+        self._sync_scroll()
 
-    def _update_scroll_region(self):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        # Show scrollbar only when content exceeds visible area
-        self.canvas.update_idletasks()
-        content_h = self.buttons_frame.winfo_reqheight()
-        canvas_h = self.canvas.winfo_height()
-        if content_h > canvas_h:
-            if not hasattr(self, '_scrollbar_visible') or not self._scrollbar_visible:
-                self._scrollbar_visible = True
-                self.scrollbar = ttk.Scrollbar(self.content_area, orient="vertical", command=self.canvas.yview)
-                self.canvas.configure(yscrollcommand=self.scrollbar.set)
-                self.scrollbar.pack(side="right", fill="y", pady=4)
-        else:
-            if hasattr(self, '_scrollbar_visible') and self._scrollbar_visible:
-                self._scrollbar_visible = False
+    def _content_overflows(self):
+        bbox = self.canvas.bbox("all")
+        if not bbox:
+            return False
+        return bbox[3] > self.canvas.winfo_height()
+
+    def _on_scroll_set(self, first, last):
+        """Only show scrollbar when content overflows."""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            # All content visible — hide scrollbar and reset view
+            if self._scrollbar_visible:
                 self.scrollbar.pack_forget()
-                self.canvas.configure(yscrollcommand=lambda *a: None)
-                self.scrollbar.destroy()
+                self._scrollbar_visible = False
+            self.canvas.yview_moveto(0)
+        else:
+            # Content overflows — show scrollbar
+            if not self._scrollbar_visible:
+                self.scrollbar.pack(side="right", fill="y", pady=4)
+                self._scrollbar_visible = True
+            self.scrollbar.set(first, last)
+
+    def _sync_scroll(self):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Force a scroll-set check to show/hide scrollbar
+        self.canvas.update_idletasks()
+        if not self._content_overflows():
+            if self._scrollbar_visible:
+                self.scrollbar.pack_forget()
+                self._scrollbar_visible = False
+            self.canvas.yview_moveto(0)
 
     # -----------------------------------------------------------------------
     # Geometry persistence
@@ -1217,7 +1237,8 @@ class PowerShellApp:
         try:
             proc = subprocess.Popen(
                 ["powershell", "-Command", command],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             self.root.after(100, lambda: self._poll_output(proc))
         except FileNotFoundError:
