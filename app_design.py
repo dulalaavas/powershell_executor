@@ -55,9 +55,13 @@ THEME = {
     "status_bg":       "#E2E8F0",
     "toast_bg":        "#1E293B",
     "toast_fg":        "#F8FAFC",
-    "output_bg":       "#1E293B",
-    "output_fg":       "#E2E8F0",
-    "output_header":   "#334155",
+    "output_bg":       "#1A1B2E",
+    "output_fg":       "#C8CCD4",
+    "output_header":   "#252640",
+    "output_border":   "#3B3D5C",
+    "output_prompt":   "#7DD3FC",
+    "output_success":  "#4ADE80",
+    "output_error":    "#FB7185",
     "badge_bg":        "#DBEAFE",
     "badge_fg":        "#1D4ED8",
 }
@@ -75,7 +79,8 @@ FONTS = {
     "status":    (FONT_FAMILY, 9),
     "toast":     (FONT_FAMILY, 10),
     "sidebar":   (FONT_FAMILY, 10),
-    "output":    ("Consolas", 9),
+    "output":    ("Consolas", 10),
+    "output_header": ("Segoe UI", 9, "bold"),
     "badge":     (FONT_FAMILY, 8),
     "empty":     (FONT_FAMILY, 12),
     "empty_sub": (FONT_FAMILY, 10),
@@ -197,36 +202,63 @@ class PowerShellApp:
 
         # ---- Output panel (hidden, pack before main so it's above status) ----
         self._output_visible = False
-        self.output_frame = tk.Frame(root, bg=THEME["output_bg"])
+        self.output_frame = tk.Frame(root, bg=THEME["output_bg"], bd=0)
+
+        # Top border line
+        tk.Frame(self.output_frame, bg=THEME["output_border"], height=1).pack(fill="x")
 
         output_header = tk.Frame(self.output_frame, bg=THEME["output_header"])
         output_header.pack(fill="x")
         tk.Label(
-            output_header, text="  Output", font=FONTS["small"],
-            bg=THEME["output_header"], fg=THEME["output_fg"], anchor="w"
-        ).pack(side="left", padx=4, pady=3)
-        clear_btn = tk.Label(
-            output_header, text="  Clear  ", font=FONTS["small"],
-            bg=THEME["output_header"], fg=THEME["text_muted"], cursor="hand2"
-        )
-        clear_btn.pack(side="right", padx=8, pady=3)
-        clear_btn.bind("<Button-1>", lambda e: self._clear_output())
+            output_header, text="  \u2588\u2588  Terminal", font=FONTS["output_header"],
+            bg=THEME["output_header"], fg=THEME["output_prompt"], anchor="w"
+        ).pack(side="left", padx=(10, 4), pady=5)
+
         close_out_btn = tk.Label(
-            output_header, text="  X  ", font=FONTS["small"],
+            output_header, text=" \u2715 ", font=FONTS["small"],
             bg=THEME["output_header"], fg=THEME["text_muted"], cursor="hand2"
         )
-        close_out_btn.pack(side="right", pady=3)
+        close_out_btn.pack(side="right", padx=(0, 8), pady=5)
         close_out_btn.bind("<Button-1>", lambda e: (self._output_toggle_var.set(False), self.toggle_output()))
+        close_out_btn.bind("<Enter>", lambda e: close_out_btn.configure(fg=THEME["output_error"]))
+        close_out_btn.bind("<Leave>", lambda e: close_out_btn.configure(fg=THEME["text_muted"]))
+
+        clear_btn = tk.Label(
+            output_header, text=" Clear ", font=FONTS["small"],
+            bg=THEME["output_header"], fg=THEME["text_muted"], cursor="hand2"
+        )
+        clear_btn.pack(side="right", padx=4, pady=5)
+        clear_btn.bind("<Button-1>", lambda e: self._clear_output())
+        clear_btn.bind("<Enter>", lambda e: clear_btn.configure(fg=THEME["output_fg"]))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.configure(fg=THEME["text_muted"]))
+
+        # Separator under header
+        tk.Frame(self.output_frame, bg=THEME["output_border"], height=1).pack(fill="x")
+
+        # Text area with both scrollbars
+        text_container = tk.Frame(self.output_frame, bg=THEME["output_bg"])
+        text_container.pack(fill="both", expand=True)
 
         self.output_text = tk.Text(
-            self.output_frame, bg=THEME["output_bg"], fg=THEME["output_fg"],
-            font=FONTS["output"], wrap="word", relief="flat", state="disabled",
-            insertbackground=THEME["output_fg"], padx=10, pady=6, height=8
+            text_container, bg=THEME["output_bg"], fg=THEME["output_fg"],
+            font=FONTS["output"], wrap="none", relief="flat", state="disabled",
+            insertbackground=THEME["output_fg"], padx=12, pady=8, height=10,
+            selectbackground=THEME["output_border"], selectforeground=THEME["output_fg"],
+            borderwidth=0, highlightthickness=0, spacing1=2, spacing3=2
         )
-        output_scroll = ttk.Scrollbar(self.output_frame, orient="vertical", command=self.output_text.yview)
-        self.output_text.configure(yscrollcommand=output_scroll.set)
+        output_vscroll = ttk.Scrollbar(text_container, orient="vertical", command=self.output_text.yview)
+        output_hscroll = ttk.Scrollbar(self.output_frame, orient="horizontal", command=self.output_text.xview)
+        self.output_text.configure(yscrollcommand=output_vscroll.set, xscrollcommand=output_hscroll.set)
+
+        output_vscroll.pack(side="right", fill="y")
         self.output_text.pack(side="left", fill="both", expand=True)
-        output_scroll.pack(side="right", fill="y")
+        output_hscroll.pack(fill="x")
+
+        # Text color tags for styled output
+        self.output_text.tag_configure("prompt", foreground=THEME["output_prompt"])
+        self.output_text.tag_configure("success", foreground=THEME["output_success"])
+        self.output_text.tag_configure("error", foreground=THEME["output_error"])
+        self.output_text.tag_configure("dim", foreground=THEME["output_border"])
 
         # ---- Main container ----
         main_container = tk.Frame(root, bg=THEME["bg"])
@@ -316,17 +348,9 @@ class PowerShellApp:
             font=FONTS["empty"], bg=THEME["content_bg"], fg=THEME["text_muted"]
         ).pack(pady=(60, 4))
         tk.Label(
-            self._empty_frame, text="Click  +  or press Ctrl+N to add your first command",
+            self._empty_frame, text="Click 'New Command' in the sidebar or press Ctrl+N",
             font=FONTS["empty_sub"], bg=THEME["content_bg"], fg=THEME["text_muted"]
         ).pack()
-
-        # ---- FAB ----
-        self.fab = tk.Canvas(root, width=54, height=54, bg=THEME["content_bg"], highlightthickness=0, bd=0)
-        self.fab.place(relx=0.93, rely=0.86, anchor="center")
-        self._draw_fab()
-        self.fab.bind("<Button-1>", lambda e: self.add_new_command())
-        self.fab.bind("<Enter>", lambda e: self._draw_fab(hover=True))
-        self.fab.bind("<Leave>", lambda e: self._draw_fab(hover=False))
 
         # ---- Toast overlay ----
         self._toast_label = tk.Label(
@@ -344,18 +368,6 @@ class PowerShellApp:
         self._tray_icon = None
         if HAS_TRAY and HAS_PIL:
             self._setup_tray()
-
-    # -----------------------------------------------------------------------
-    # FAB
-    # -----------------------------------------------------------------------
-    def _draw_fab(self, hover=False):
-        self.fab.delete("all")
-        color = THEME["accent_hover"] if hover else THEME["accent"]
-        # Shadow
-        self.fab.create_oval(4, 5, 52, 53, fill=THEME["card_shadow"], outline="")
-        # Circle
-        self.fab.create_oval(2, 2, 50, 50, fill=color, outline="")
-        self.fab.create_text(26, 25, text="+", fill=THEME["accent_fg"], font=FONTS["fab"])
 
     # -----------------------------------------------------------------------
     # Canvas resize
@@ -453,6 +465,22 @@ class PowerShellApp:
         for w in self._sidebar_extras:
             w.destroy()
         self._sidebar_extras.clear()
+
+        # "New Command" button at top of sidebar
+        new_cmd_btn = tk.Frame(self.sidebar, bg=THEME["accent"], cursor="hand2")
+        new_cmd_btn.pack(fill="x", padx=10, pady=(4, 6))
+        self._sidebar_extras.append(new_cmd_btn)
+
+        new_cmd_lbl = tk.Label(
+            new_cmd_btn, text=" +  New Command", font=FONTS["sidebar"],
+            bg=THEME["accent"], fg=THEME["accent_fg"], anchor="w", cursor="hand2"
+        )
+        new_cmd_lbl.pack(fill="x", padx=8, pady=6)
+
+        for w in (new_cmd_btn, new_cmd_lbl):
+            w.bind("<Button-1>", lambda e: self.add_new_command())
+            w.bind("<Enter>", lambda e: new_cmd_lbl.configure(bg=THEME["accent_hover"]) or new_cmd_btn.configure(bg=THEME["accent_hover"]))
+            w.bind("<Leave>", lambda e: new_cmd_lbl.configure(bg=THEME["accent"]) or new_cmd_btn.configure(bg=THEME["accent"]))
 
         # Fixed items: Search, Home
         for fixed in ("Search", "Home"):
@@ -1159,6 +1187,18 @@ class PowerShellApp:
         if not messagebox.askyesno("Confirm", f"Run this command?\n\n{command}"):
             return
         self._toast("Running...")
+
+        # Show the output panel and print command banner
+        if not self._output_visible:
+            self._output_toggle_var.set(True)
+            self.toggle_output()
+        self.output_text.configure(state="normal")
+        self.output_text.insert("end", "\n  PS > ", "prompt")
+        self.output_text.insert("end", command + "\n", "prompt")
+        self.output_text.insert("end", "  " + "\u2500" * 50 + "\n", "dim")
+        self.output_text.see("end")
+        self.output_text.configure(state="disabled")
+
         try:
             proc = subprocess.Popen(
                 ["powershell", "-Command", command],
@@ -1175,7 +1215,6 @@ class PowerShellApp:
         chunk = b""
         if proc.stdout:
             try:
-                # Non-blocking: read whatever is available
                 if hasattr(proc.stdout, "read1"):
                     chunk = proc.stdout.read1(4096)
                 else:
@@ -1184,29 +1223,33 @@ class PowerShellApp:
                 pass
         if chunk:
             text = chunk.decode("utf-8", errors="replace")
+            # Indent each line for cleaner look
+            lines = text.split("\n")
+            formatted = "\n".join(("  " + line) if line.strip() else line for line in lines)
             self.output_text.configure(state="normal")
-            self.output_text.insert("end", text)
+            self.output_text.insert("end", formatted)
             self.output_text.see("end")
             self.output_text.configure(state="disabled")
-            if not self._output_visible:
-                self._output_toggle_var.set(True)
-                self.toggle_output()
         if ret is None:
             self.root.after(150, lambda: self._poll_output(proc))
         else:
-            # Read any remaining
             if proc.stdout:
                 try:
                     remaining = proc.stdout.read()
                     if remaining:
                         text = remaining.decode("utf-8", errors="replace")
+                        lines = text.split("\n")
+                        formatted = "\n".join(("  " + line) if line.strip() else line for line in lines)
                         self.output_text.configure(state="normal")
-                        self.output_text.insert("end", text)
+                        self.output_text.insert("end", formatted)
                         self.output_text.configure(state="disabled")
                 except Exception:
                     pass
             self.output_text.configure(state="normal")
-            self.output_text.insert("end", f"\n{'─' * 40}\nProcess exited with code {ret}\n\n")
+            tag = "success" if ret == 0 else "error"
+            status_text = "\u2714  Process completed successfully" if ret == 0 else f"\u2718  Process exited with code {ret}"
+            self.output_text.insert("end", "\n  " + "\u2500" * 50 + "\n", "dim")
+            self.output_text.insert("end", f"  {status_text}\n\n", tag)
             self.output_text.see("end")
             self.output_text.configure(state="disabled")
             self._toast("Command finished")
