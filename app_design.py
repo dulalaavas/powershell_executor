@@ -5,6 +5,8 @@ import json
 import os
 import sys
 import ctypes
+import re
+import tempfile
 
 try:
     from PIL import Image, ImageTk
@@ -97,6 +99,13 @@ CARD_IMAGE_SIZE = (160, 100)
 CARD_MAX_NAME = 22
 COLUMNS = 3
 
+# Regex to strip ANSI escape sequences from terminal output
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+# Detect spinner lines: just a single - \ | / surrounded by whitespace
+_SPINNER_RE = re.compile(r'^\s*[\\|/\-]\s*$')
+# Detect progress bar lines: contain block drawing characters
+_PROGRESS_RE = re.compile(r'[█▒░▓]')
+
 
 # ---------------------------------------------------------------------------
 # Tooltip helper
@@ -180,6 +189,11 @@ class PowerShellApp:
         self.root.configure(bg=THEME["bg"])
         self.root.minsize(750, 500)
 
+        # Window icon
+        ico_path = os.path.join(SCRIPT_DIR, "Powershell_custom.ico")
+        if os.path.isfile(ico_path):
+            self.root.iconbitmap(default=ico_path)
+
         self._load_geometry()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -187,6 +201,7 @@ class PowerShellApp:
         self.custom_categories = self._load_custom_categories()
         self._drag_data = {"idx": None}
         self._visible_count = 0
+        self._last_output_transient = False
 
         self.create_menubar()
 
@@ -1271,16 +1286,44 @@ class PowerShellApp:
             return
 
         if admin:
-            # Elevated run via ShellExecute — triggers UAC prompt
-            # Output can't be captured for elevated processes
             self._toast("Launching as Administrator...")
+
+            # Show the output panel and print command banner
+            if not self._output_visible:
+                self._output_toggle_var.set(True)
+                self.toggle_output()
+            self.output_text.configure(state="normal")
+            self.output_text.insert("end", "\n  PS (Admin) > ", "prompt")
+            self.output_text.insert("end", command + "\n", "prompt")
+            self.output_text.insert("end", "  " + "\u2500" * 50 + "\n", "dim")
+            self.output_text.see("end")
+            self.output_text.configure(state="disabled")
+
+            # Create temp files: a .ps1 script and a .txt for captured output
+            fd_out, output_path = tempfile.mkstemp(suffix=".txt")
+            os.close(fd_out)
+            fd_scr, script_path = tempfile.mkstemp(suffix=".ps1")
+            os.close(fd_scr)
+
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(f'& {{ {command} }} *>&1 | Out-File -FilePath "{output_path}" -Encoding utf8\n')
+                f.write(f'Add-Content -Path "{output_path}" -Value "`n<<<ADMIN_DONE>>>"')
+
             try:
                 ctypes.windll.shell32.ShellExecuteW(
                     None, "runas", "powershell",
-                    f'-Command "{command}"', None, 0
+                    f'-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{script_path}"',
+                    None, 0
                 )
+                self._admin_read_pos = 0
+                self.root.after(500, lambda: self._poll_admin_file(output_path, script_path))
             except Exception as e:
                 messagebox.showerror("Error", str(e))
+                try:
+                    os.unlink(output_path)
+                    os.unlink(script_path)
+                except OSError:
+                    pass
             return
 
         self._toast("Running...")
@@ -1308,6 +1351,48 @@ class PowerShellApp:
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
+    def _append_output(self, text):
+        """Append text to the output widget, handling \\r, spinners, and progress bars in-place."""
+        text = _ANSI_RE.sub("", text)
+        text = text.replace('\ufeff', '')  # Strip BOM
+        text = text.replace('\r\n', '\n')
+
+        self.output_text.configure(state="normal")
+        segments = text.split('\r')
+        for i, segment in enumerate(segments):
+            if i > 0:
+                # Bare \r: overwrite the current line
+                line_start = self.output_text.index("end-1c linestart")
+                self.output_text.delete(line_start, "end-1c")
+            if segment:
+                lines = segment.split("\n")
+                need_newline = False
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        # Skip blank/whitespace-only lines adjacent to transient output
+                        if not self._last_output_transient:
+                            need_newline = True
+                        continue
+                    is_transient = bool(
+                        _SPINNER_RE.match(line) or _PROGRESS_RE.search(line)
+                    )
+                    if is_transient:
+                        if self._last_output_transient:
+                            # Overwrite the previous transient line
+                            ls = self.output_text.index("end-1c linestart")
+                            self.output_text.delete(ls, "end-1c")
+                        self.output_text.insert("end", "  " + stripped)
+                        self._last_output_transient = True
+                    else:
+                        if need_newline or self._last_output_transient:
+                            self.output_text.insert("end", "\n")
+                        self.output_text.insert("end", "  " + stripped)
+                        self._last_output_transient = False
+                    need_newline = True
+        self.output_text.see("end")
+        self.output_text.configure(state="disabled")
+
     def _poll_output(self, proc):
         ret = proc.poll()
         chunk = b""
@@ -1321,13 +1406,7 @@ class PowerShellApp:
                 pass
         if chunk:
             text = chunk.decode("utf-8", errors="replace")
-            # Indent each line for cleaner look
-            lines = text.split("\n")
-            formatted = "\n".join(("  " + line) if line.strip() else line for line in lines)
-            self.output_text.configure(state="normal")
-            self.output_text.insert("end", formatted)
-            self.output_text.see("end")
-            self.output_text.configure(state="disabled")
+            self._append_output(text)
         if ret is None:
             self.root.after(150, lambda: self._poll_output(proc))
         else:
@@ -1336,11 +1415,7 @@ class PowerShellApp:
                     remaining = proc.stdout.read()
                     if remaining:
                         text = remaining.decode("utf-8", errors="replace")
-                        lines = text.split("\n")
-                        formatted = "\n".join(("  " + line) if line.strip() else line for line in lines)
-                        self.output_text.configure(state="normal")
-                        self.output_text.insert("end", formatted)
-                        self.output_text.configure(state="disabled")
+                        self._append_output(text)
                 except Exception:
                     pass
             self.output_text.configure(state="normal")
@@ -1352,10 +1427,44 @@ class PowerShellApp:
             self.output_text.configure(state="disabled")
             self._toast("Command finished")
 
+    def _poll_admin_file(self, output_path, script_path):
+        """Poll the temp output file written by an elevated PowerShell process."""
+        done = False
+        try:
+            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self._admin_read_pos)
+                new_data = f.read()
+                if new_data:
+                    self._admin_read_pos += len(new_data.encode("utf-8"))
+                    if "<<<ADMIN_DONE>>>" in new_data:
+                        new_data = new_data.replace("<<<ADMIN_DONE>>>", "")
+                        done = True
+                    self._append_output(new_data)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+        if done:
+            self.output_text.configure(state="normal")
+            self.output_text.insert("end", "\n  " + "\u2500" * 50 + "\n", "dim")
+            self.output_text.insert("end", "  \u2714  Process completed (Admin)\n\n", "success")
+            self.output_text.see("end")
+            self.output_text.configure(state="disabled")
+            self._toast("Command finished")
+            try:
+                os.unlink(output_path)
+                os.unlink(script_path)
+            except OSError:
+                pass
+        else:
+            self.root.after(300, lambda: self._poll_admin_file(output_path, script_path))
+
     def _clear_output(self):
         self.output_text.configure(state="normal")
         self.output_text.delete("1.0", "end")
         self.output_text.configure(state="disabled")
+        self._last_output_transient = False
 
     # -----------------------------------------------------------------------
     # Right-click context menu
@@ -1607,7 +1716,12 @@ class PowerShellApp:
     # -----------------------------------------------------------------------
     def _setup_tray(self):
         try:
-            img = Image.new("RGB", (64, 64), THEME["accent"])
+            ico_path = os.path.join(SCRIPT_DIR, "Powershell_custom.ico")
+            if os.path.isfile(ico_path):
+                img = Image.open(ico_path)
+                img = img.resize((64, 64), Image.LANCZOS)
+            else:
+                img = Image.new("RGB", (64, 64), THEME["accent"])
             menu = TrayMenu(
                 TrayMenuItem("Show", self._tray_show),
                 TrayMenuItem("Exit", self._tray_exit),
