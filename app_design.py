@@ -63,13 +63,14 @@ THEME = {
     "status_bg":       "#E2E8F0",
     "toast_bg":        "#1E293B",
     "toast_fg":        "#F8FAFC",
-    "output_bg":       "#1A1B2E",
-    "output_fg":       "#C8CCD4",
-    "output_header":   "#252640",
-    "output_border":   "#3B3D5C",
-    "output_prompt":   "#7DD3FC",
-    "output_success":  "#4ADE80",
-    "output_error":    "#FB7185",
+    "output_bg":       "#012456",
+    "output_fg":       "#CCCCCC",
+    "output_header":   "#012456",
+    "output_border":   "#013A6B",
+    "output_prompt":   "#FFFF00",
+    "output_success":  "#00FF00",
+    "output_error":    "#FF6060",
+    "output_warning":  "#FFFF00",
     "badge_bg":        "#DBEAFE",
     "badge_fg":        "#1D4ED8",
 }
@@ -101,10 +102,6 @@ COLUMNS = 3
 
 # Regex to strip ANSI escape sequences from terminal output
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
-# Detect spinner lines: just a single - \ | / surrounded by whitespace
-_SPINNER_RE = re.compile(r'^\s*[\\|/\-]\s*$')
-# Detect progress bar lines: contain block drawing characters
-_PROGRESS_RE = re.compile(r'[█▒░▓]')
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +198,6 @@ class PowerShellApp:
         self.custom_categories = self._load_custom_categories()
         self._drag_data = {"idx": None}
         self._visible_count = 0
-        self._last_output_transient = False
 
         self.create_menubar()
 
@@ -231,7 +227,7 @@ class PowerShellApp:
         output_header = tk.Frame(self.output_frame, bg=THEME["output_header"])
         output_header.pack(fill="x")
         tk.Label(
-            output_header, text="  \u2588\u2588  Terminal", font=FONTS["output_header"],
+            output_header, text="  PS>  PowerShell", font=FONTS["output_header"],
             bg=THEME["output_header"], fg=THEME["output_prompt"], anchor="w"
         ).pack(side="left", padx=(10, 4), pady=5)
 
@@ -277,6 +273,7 @@ class PowerShellApp:
         self.output_text.tag_configure("prompt", foreground=THEME["output_prompt"])
         self.output_text.tag_configure("success", foreground=THEME["output_success"])
         self.output_text.tag_configure("error", foreground=THEME["output_error"])
+        self.output_text.tag_configure("warning", foreground=THEME["output_warning"])
         self.output_text.tag_configure("dim", foreground=THEME["output_border"])
 
         # ---- Main container ----
@@ -1285,19 +1282,22 @@ class PowerShellApp:
         if not messagebox.askyesno("Confirm", f"Run this command{mode_label}?\n\n{command}"):
             return
 
+        # Show the output panel and print PS-style prompt
+        if not self._output_visible:
+            self._output_toggle_var.set(True)
+            self.toggle_output()
+        self.output_text.configure(state="normal")
+        if admin:
+            self.output_text.insert("end", f"\nPS {SCRIPT_DIR}> ", "prompt")
+            self.output_text.insert("end", f"[Admin] {command}\n", "prompt")
+        else:
+            self.output_text.insert("end", f"\nPS {SCRIPT_DIR}> ", "prompt")
+            self.output_text.insert("end", command + "\n", "prompt")
+        self.output_text.see("end")
+        self.output_text.configure(state="disabled")
+
         if admin:
             self._toast("Launching as Administrator...")
-
-            # Show the output panel and print command banner
-            if not self._output_visible:
-                self._output_toggle_var.set(True)
-                self.toggle_output()
-            self.output_text.configure(state="normal")
-            self.output_text.insert("end", "\n  PS (Admin) > ", "prompt")
-            self.output_text.insert("end", command + "\n", "prompt")
-            self.output_text.insert("end", "  " + "\u2500" * 50 + "\n", "dim")
-            self.output_text.see("end")
-            self.output_text.configure(state="disabled")
 
             # Create temp files: a .ps1 script and a .txt for captured output
             fd_out, output_path = tempfile.mkstemp(suffix=".txt")
@@ -1305,9 +1305,11 @@ class PowerShellApp:
             fd_scr, script_path = tempfile.mkstemp(suffix=".ps1")
             os.close(fd_scr)
 
+            # Use Start-Process to run the command and redirect raw console output
             with open(script_path, "w", encoding="utf-8") as f:
-                f.write(f'& {{ {command} }} *>&1 | Out-File -FilePath "{output_path}" -Encoding utf8\n')
-                f.write(f'Add-Content -Path "{output_path}" -Value "`n<<<ADMIN_DONE>>>"')
+                f.write(f'$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(500,9999)\n')
+                f.write(f'{command} 2>&1 | Out-String -Stream | Add-Content -Path "{output_path}" -Encoding utf8\n')
+                f.write(f'Add-Content -Path "{output_path}" -Value "<<<ADMIN_DONE>>>"')
 
             try:
                 ctypes.windll.shell32.ShellExecuteW(
@@ -1328,20 +1330,9 @@ class PowerShellApp:
 
         self._toast("Running...")
 
-        # Show the output panel and print command banner
-        if not self._output_visible:
-            self._output_toggle_var.set(True)
-            self.toggle_output()
-        self.output_text.configure(state="normal")
-        self.output_text.insert("end", "\n  PS > ", "prompt")
-        self.output_text.insert("end", command + "\n", "prompt")
-        self.output_text.insert("end", "  " + "\u2500" * 50 + "\n", "dim")
-        self.output_text.see("end")
-        self.output_text.configure(state="disabled")
-
         try:
             proc = subprocess.Popen(
-                ["powershell", "-Command", command],
+                ["powershell", "-NoProfile", "-Command", command],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
@@ -1352,7 +1343,7 @@ class PowerShellApp:
             messagebox.showerror("Error", str(e))
 
     def _append_output(self, text):
-        """Append text to the output widget, handling \\r, spinners, and progress bars in-place."""
+        """Append text to the output widget, handling \\r and ANSI codes only."""
         text = _ANSI_RE.sub("", text)
         text = text.replace('\ufeff', '')  # Strip BOM
         text = text.replace('\r\n', '\n')
@@ -1365,31 +1356,7 @@ class PowerShellApp:
                 line_start = self.output_text.index("end-1c linestart")
                 self.output_text.delete(line_start, "end-1c")
             if segment:
-                lines = segment.split("\n")
-                need_newline = False
-                for line in lines:
-                    stripped = line.strip()
-                    if not stripped:
-                        # Skip blank/whitespace-only lines adjacent to transient output
-                        if not self._last_output_transient:
-                            need_newline = True
-                        continue
-                    is_transient = bool(
-                        _SPINNER_RE.match(line) or _PROGRESS_RE.search(line)
-                    )
-                    if is_transient:
-                        if self._last_output_transient:
-                            # Overwrite the previous transient line
-                            ls = self.output_text.index("end-1c linestart")
-                            self.output_text.delete(ls, "end-1c")
-                        self.output_text.insert("end", "  " + stripped)
-                        self._last_output_transient = True
-                    else:
-                        if need_newline or self._last_output_transient:
-                            self.output_text.insert("end", "\n")
-                        self.output_text.insert("end", "  " + stripped)
-                        self._last_output_transient = False
-                    need_newline = True
+                self.output_text.insert("end", segment)
         self.output_text.see("end")
         self.output_text.configure(state="disabled")
 
@@ -1420,9 +1387,9 @@ class PowerShellApp:
                     pass
             self.output_text.configure(state="normal")
             tag = "success" if ret == 0 else "error"
-            status_text = "\u2714  Process completed successfully" if ret == 0 else f"\u2718  Process exited with code {ret}"
-            self.output_text.insert("end", "\n  " + "\u2500" * 50 + "\n", "dim")
-            self.output_text.insert("end", f"  {status_text}\n\n", tag)
+            status_text = "Command completed successfully." if ret == 0 else f"Process exited with code {ret}"
+            self.output_text.insert("end", f"\n{status_text}\n", tag)
+            self.output_text.insert("end", f"PS {SCRIPT_DIR}> ", "prompt")
             self.output_text.see("end")
             self.output_text.configure(state="disabled")
             self._toast("Command finished")
@@ -1447,8 +1414,8 @@ class PowerShellApp:
 
         if done:
             self.output_text.configure(state="normal")
-            self.output_text.insert("end", "\n  " + "\u2500" * 50 + "\n", "dim")
-            self.output_text.insert("end", "  \u2714  Process completed (Admin)\n\n", "success")
+            self.output_text.insert("end", "\nCommand completed (Admin).\n", "success")
+            self.output_text.insert("end", f"PS {SCRIPT_DIR}> ", "prompt")
             self.output_text.see("end")
             self.output_text.configure(state="disabled")
             self._toast("Command finished")
@@ -1464,7 +1431,6 @@ class PowerShellApp:
         self.output_text.configure(state="normal")
         self.output_text.delete("1.0", "end")
         self.output_text.configure(state="disabled")
-        self._last_output_transient = False
 
     # -----------------------------------------------------------------------
     # Right-click context menu
